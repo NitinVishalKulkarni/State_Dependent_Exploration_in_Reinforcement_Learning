@@ -1,37 +1,42 @@
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 from custom_policies import CustomActorCriticPolicy
-import json
 from results_generator import ResultsGenerator
-from torchvision.models import AlexNet_Weights, AlexNet
-from cuml.cluster import hdbscan, HDBSCAN
-import sys
+
+import json
+from src.settings import results_directory
 
 if __name__ == "__main__":
     results_generator_configuration = {
         "configuration_name": "SDE",
         "environment_id": "PongNoFrameskip-v4",
+        "is_atari_environment": True,
         "make_vector_environment_bool": True,
+        "vector_environment_class": SubprocVecEnv,
+        "number_of_frames_to_stack": 4,
+        # Training configration:
         "number_of_training_environments": 10,
         "environment_keyword_arguments": {},
-        # "environment_keyword_arguments": {"max_episode_steps": 10_000},
-        "number_of_training_runs": 5,
+        # "environment_keyword_arguments": {"max_episode_steps": 100_000},
+        "number_of_training_runs": 10,
         "agent": PPO,
         "policy": CustomActorCriticPolicy,
         "verbose": 1,
         "device": "cuda",
         "total_timesteps": 1_000_000,
+        # Evaluation configuration:
         "number_of_evaluation_environments": 10,
         "number_of_evaluation_episodes": 10,
         "deterministic_evaluation_policy": True,
         "render_evaluation": False,
-        "use_state_dependent_exploration": True,
+        "use_state_dependent_exploration": False,
         "evaluate_agent_performance": True,
         "evaluation_frequency": 2048,
         "store_raw_evaluation_results": True,
     }
 
     state_dependent_exploration_configuration = {
-        "verbose": 0,
+        "verbose": 1,
         "action_space": None,
         "feature_extractor": "UMAP",
         "device": results_generator_configuration["device"],
@@ -47,7 +52,7 @@ if __name__ == "__main__":
         "prediction_data": True,
         "cluster_persistence": 0.1,
         # UMAP configuration:
-        "n_components": 32,
+        "n_components": 16,
         "number_of_feature_extractor_train_observations": 10_000,
     }
 

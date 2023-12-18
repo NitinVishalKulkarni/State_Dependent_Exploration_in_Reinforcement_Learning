@@ -4,7 +4,6 @@ import time
 import numpy as np
 
 # import hdbscan
-
 from cuml.cluster import hdbscan
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from collections import Counter
@@ -23,6 +22,7 @@ from torchvision.models import AlexNet_Weights, AlexNet
 import torch.nn as nn
 from sklearn.metrics import pairwise_distances
 from sklearn.preprocessing import Normalizer
+import copy
 
 
 class CNNFeatureExtractor(AlexNet):
@@ -73,8 +73,6 @@ class StateDependentExploration(BaseCallback):
         ]
         self.device = state_dependent_exploration_configuration["device"]
 
-        self.use_nn_features = True
-
         self.clusterer = hdbscan.HDBSCAN(
             min_cluster_size=state_dependent_exploration_configuration[
                 "min_cluster_size"
@@ -95,6 +93,7 @@ class StateDependentExploration(BaseCallback):
                 "prediction_data"
             ],
         )
+
         self.cluster_persistence = state_dependent_exploration_configuration[
             "cluster_persistence"
         ]
@@ -134,8 +133,18 @@ class StateDependentExploration(BaseCallback):
         """
 
         feature_extractor_train_start_time = time.perf_counter()
+        if self.feature_extractor is None:
+            if self.verbose >= 1:
+                print(
+                    f"\n\n\033[1mUsing Original Observations for Clustering:\033[0m\n\n"
+                )
+        elif self.feature_extractor == "Pre-trained CNN":
+            if self.verbose >= 1:
+                print(
+                    f"\n\n\033[1mUsing {self.feature_extractor} Feature Extractor for Clustering:\033[0m\n\n"
+                )
 
-        if self.feature_extractor in ["CNN", "CNN + UMAP"]:
+        elif self.feature_extractor == "Pre-trained CNN + UMAP":
             if self.verbose >= 1:
                 print(
                     f"\n\n\033[1mUsing {self.feature_extractor} Feature Extractor for Clustering:\033[0m\n\n"
@@ -173,8 +182,8 @@ class StateDependentExploration(BaseCallback):
                         )
                     # print(f"Feature Extractor Training Observation: {feature_extractor_train_observations[0].shape}")
 
-            if self.feature_extractor == "CNN + UMAP":
-                self.umap.fit(cp.asarray(feature_extractor_train_observations))
+            self.umap.fit(cp.asarray(feature_extractor_train_observations))
+            del feature_extractor_train_observations
 
             if self.verbose >= 1:
                 print(
@@ -210,13 +219,19 @@ class StateDependentExploration(BaseCallback):
                     f"\n\n\033[1mTime to Train Feature Extractor:"
                     f" {time.perf_counter() - feature_extractor_train_start_time} \033[0m\n\n"
                 )
+            del feature_extractor_train_observations
+
+        elif self.feature_extractor == "Latent Policy":
+            if self.verbose >= 1:
+                print(
+                    f"\n\n\033[1mUsing {self.feature_extractor} Feature Extractor for Clustering:\033[0m\n\n"
+                )
 
         else:
             raise ValueError(
-                f"Expected Feature Extractor from 1. CNN 2. UMAP 3. CNN + UMAP, got '{self.feature_extractor}'."
+                f"Expected Feature Extractor from 1. None 2. Pre-trained CNN 3. UMAP 4. Pre-trained CNN + UMAP, 5. Latent Policy got "
+                f"'{self.feature_extractor}'."
             )
-
-        del feature_extractor_train_observations
 
         # # Test UMAP Batch Transform Time:
         # batch_transform_start = perf_counter()
@@ -309,39 +324,38 @@ class StateDependentExploration(BaseCallback):
             self.num_timesteps
             < self.reweighing_duration * self.locals["total_timesteps"]
         ):
-            if self.use_nn_features:
-                # TESTING CNN FEATURES:
-                # # print(self.device)
-                # # print(f"Last Observation Shape:", self.model._last_obs.shape)
-                # # self.states_observed.append(self.model._last_obs.squeeze())
-                # # temp = self.features_extractor(torch.tensor(self.model._last_obs, device="cuda"))
-                # # temp = torch.tensor_split(temp, temp.size()[0])
-                # # temp = [temp[i].squeeze() for i in range(len(temp))]
-                # # print("TEST FS:", type(temp), temp[0].size())
-                # with torch.inference_mode():
-                #     state_features = self.features_extractor(torch.tensor(self.model._last_obs, device="cuda"))
-                #     state_features = torch.tensor_split(state_features, state_features.size()[0])
-                #     for state_feature in state_features:
-                #         self.states_observed.append(state_feature.squeeze())
-                #         print(f"NN State Feature Shape: {state_feature.squeeze().shape}")
-                #     # self.states_observed.append(
-                #     #     self.features_extractor(torch.tensor(self.model._last_obs, device="cuda")).squeeze())
+            if self.feature_extractor is None:
+                for observation in self.model._last_obs:
+                    self.states_observed.append(observation)
 
-                # # Testing Pre-trained CNN feature extractor.
-                # with torch.inference_mode():
-                #     img = self.model._last_obs
-                #     img = [img_[1:, :, :] for img_ in img]
-                #     # img = torch.tensor(self.model._last_obs, dtype=torch.float32, device="cuda")
-                #     img = torch.tensor(img, dtype=torch.float32, device="cuda")
-                #
-                #     # img = self.conv0(img)
-                #     img = self.preprocess(img)
-                #     img = self.cnn_feature_extractor.get_features(img)
-                #     # print("Final Img Size", img.size())
-                # state_features = self.umap.transform(img)
-                # # print(f"SF:", state_features.shape)
-                # # sys.exit()
+            elif self.feature_extractor == "Latent Policy":
+                observations = torch.tensor(self.model._last_obs, device="cpu")
+                for observation in observations:
+                    self.states_observed.append(observation / 255)
 
+            elif self.feature_extractor in ["CNN", "CNN + UMAP"]:
+                # Testing Pre-trained CNN feature extractor.
+                with torch.inference_mode():
+                    img = self.model._last_obs
+                    img = [img_[-3:, :, :] for img_ in img]
+                    # img = torch.tensor(self.model._last_obs, dtype=torch.float32, device="cuda")
+                    img = torch.tensor(img, dtype=torch.float32, device="cuda")
+
+                    # img = self.conv0(img)
+                    img = self.preprocess(img)
+                    img = self.cnn_feature_extractor.get_features(img)
+                    # print("Final Img Size", img.size())
+                if self.feature_extractor == "CNN":
+                    state_features = img
+                else:
+                    state_features = self.umap.transform(img)
+
+                for state_feature in state_features:
+                    self.states_observed.append(state_feature)
+                # print(f"SF:", state_features.shape)
+                # sys.exit()
+
+            elif self.feature_extractor == "UMAP":
                 # Testing UMAP features:
                 state_features = self.umap.transform(
                     np.asarray(
@@ -395,6 +409,7 @@ class StateDependentExploration(BaseCallback):
         """
         This method...
         """
+
         # print(f"Length States Observed: "
         #       f"{len(self.states_observed), self.num_timesteps, self.locals['total_timesteps']}")
         # print(f"States Observed: {self.states_observed}")
@@ -413,7 +428,9 @@ class StateDependentExploration(BaseCallback):
             action_probabilities.squeeze()
             for action_probabilities in action_probabilities_
         ]
-        # print(f"Action Probabilities:", action_probabilities_[0].size())
+
+        # print(f"Action Probabilities:", action_probabilities_)
+
         action_probabilities_to_return = []
         for state_index, action_probabilities in enumerate(action_probabilities_):
             # Exponential Decay:
@@ -426,7 +443,7 @@ class StateDependentExploration(BaseCallback):
             action_probabilities = {
                 i: action_probabilities[i] for i in range(len(action_probabilities))
             }
-            # print("Check 1")
+            # print("Check 1", action_probabilities)
 
             if (
                 len(self.states_observed) < 100
@@ -436,32 +453,63 @@ class StateDependentExploration(BaseCallback):
             ):
                 # print("Check 2")
                 self.previous_number_of_states_clustered = len(self.states_observed)
-
-                if self.use_nn_features:
+                if self.feature_extractor is None:
+                    self.clusterer.fit(cp.asarray(self.states_observed))
+                elif self.feature_extractor == "Latent Policy":
                     # TODO: Remove inference mode later. Default is inference mode.
-                    # with torch.inference_mode():
-                    #     neural_network.sde_critic.load_state_dict(neural_network.policy_net.state_dict())
-                    #     # features = feature_extractor(torch.tensor(self.states_observed, device=device))
-                    #     # print(f"Features: {type(features), features.size(), features.requires_grad, device}")
-                    #     if share_features_extractor:
-                    #         # latent_pi, _ = neural_network(features)
-                    #         # latent_pi, _ = neural_network(torch.stack(self.states_observed, dim=0))
-                    #         latent_vf = neural_network.forward_sde_critic(torch.stack(self.states_observed, dim=0))
-                    #         # latent_pi, _ = neural_network(self.states_observed)
-                    #         # print(f"Latent Pi: {type(latent_vf), latent_vf.size()}")
-                    #     # else:
-                    #     #     # pi_features, _ = torch.tensor(features)
-                    #     #     pi_features, _ = torch.stack(self.states_observed, dim=0)
-                    #     #     latent_pi = neural_network.forward_actor(pi_features)
-                    # # print(f"Features: {type(features), features.size()}")
-                    # # print(f"Latent Pi: {type(latent_pi), latent_pi.size(), latent_pi.requires_grad}")
-                    # # sys.exit()
-                    # # latent_pi = latent_pi.cpu().detach()
-                    # self.clusterer.fit(cp.asarray(self.states_observed))
-                    norm_data = self.feature_normalizer.fit_transform(
-                        self.states_observed
-                    )
-                    self.clusterer.fit(cp.asarray(norm_data))
+                    with torch.inference_mode():
+                        # neural_network.sde_actor_cnn = copy.deepcopy(neural_network.cnn)
+                        # neural_network.sde_actor_linear = copy.deepcopy(
+                        #     neural_network.linear
+                        # )
+                        neural_network.sde_actor_cnn.load_state_dict(
+                            neural_network.cnn.state_dict()
+                        )
+                        neural_network.sde_actor_linear.load_state_dict(
+                            neural_network.linear.state_dict()
+                        )
+
+                        neural_network.sde_actor = nn.Sequential(
+                            neural_network.sde_actor_cnn,
+                            neural_network.sde_actor_linear,
+                        )
+                        neural_network.sde_actor.to(device="cpu")
+
+                        # neural_network.sde_actor.load_state_dict(
+                        #     neural_network.policy_net.state_dict()
+                        # )
+                        # features = feature_extractor(torch.tensor(self.states_observed, device=device))
+                        # print(f"Features: {type(features), features.size(), features.requires_grad, device}")
+                        if share_features_extractor:
+                            # latent_pi, _ = neural_network(features)
+                            # latent_pi, _ = neural_network(torch.stack(self.states_observed, dim=0))
+                            # latent_pi = neural_network.forward_sde_actor(
+                            #     torch.stack(self.states_observed, dim=0)
+                            # )
+
+                            latent_pi = neural_network.forward_sde_actor(
+                                torch.stack(self.states_observed, dim=0)
+                            )
+                            # latent_pi, _ = neural_network(self.states_observed)
+                            # print(f"Latent Pi: {type(latent_vf), latent_vf.size()}")
+                        # else:
+                        #     # pi_features, _ = torch.tensor(features)
+                        #     pi_features, _ = torch.stack(self.states_observed, dim=0)
+                        #     latent_pi = neural_network.forward_actor(pi_features)
+                    # print(f"Features: {type(features), features.size()}")
+                    # print(
+                    #     f"Latent Pi: {type(latent_pi), latent_pi.size(), latent_pi.requires_grad}"
+                    # )
+                    latent_pi = latent_pi.cpu().detach()
+                    self.clusterer.fit(cp.asarray(latent_pi))
+                    # sys.exit()
+                    # latent_pi = latent_pi.cpu().detach()
+                elif self.feature_extractor == "UMAP":
+                    self.clusterer.fit(cp.asarray(self.states_observed))
+                    # norm_data = self.feature_normalizer.fit_transform(
+                    #     self.states_observed
+                    # )
+                    # self.clusterer.fit(cp.asarray(norm_data))
                     # pw_distance = pairwise_distances(
                     #     np.asarray(self.states_observed), metric="cosine"
                     # )
@@ -474,7 +522,7 @@ class StateDependentExploration(BaseCallback):
                 self.cluster_labels_checkpoint = self.clusterer.labels_
                 self.entire_data_clustered = True
 
-                if self.verbose >= 1:
+                if self.verbose >= 2:
                     print(f"\n\nTotal States Observed: {len(self.states_observed)}")
                     print(
                         f"Cluster Counts: {sorted(Counter(self.clusterer.labels_.tolist()).values(), reverse=True)}"
@@ -487,42 +535,58 @@ class StateDependentExploration(BaseCallback):
                     )
             else:
                 # print("Check 3")
-                if self.use_nn_features:
-                    # TODO: Remove inference mode later. Default is inference mode.
-                    # with torch.inference_mode():
-                    #     # features = feature_extractor(torch.tensor(self.states_observed[-1:], device=device))
-                    #     # print(f"Feature: {type(features), features.size(), features.requires_grad}")
-                    #     if share_features_extractor:
-                    #         # latent_pi, _ = neural_network(features)
-                    #         # latent_pi, _ = neural_network(torch.stack(self.states_observed[-1:], dim=0))
-                    #         latent_vf = neural_network.forward_sde_critic(
-                    #             torch.stack(self.states_observed[-1:], dim=0))
-                    #         # latent_pi, _ = neural_network(torch.tensor(self.states_observed[-1:], device=device))
-                    #     # else:
-                    #     #     # pi_features, _ = torch.tensor(features)
-                    #     #     pi_features, _ = torch.stack(self.states_observed[-1:], dim=0)
-                    #     #     latent_pi = neural_network.forward_actor(pi_features)
-                    # # latent_pi = latent_pi.cpu()
-                    # new_labels, _ = hdbscan.approximate_predict(
-                    #     self.clusterer, cp.asarray(self.states_observed[-1:])
-                    # )
-                    # new_labels, _ = hdbscan.approximate_predict(
-                    #     self.clusterer,
-                    #     cp.asarray(
-                    #         self.states_observed[
-                    #             -self.training_env.num_envs + state_index
-                    #         ]
-                    #     ).reshape(1, self.n_components),
-                    # )
-
+                if self.feature_extractor is None:
                     new_labels, _ = hdbscan.approximate_predict(
                         self.clusterer,
                         cp.asarray(
-                            self.feature_normalizer.transform(
+                            self.states_observed[
+                                -self.training_env.num_envs + state_index
+                            ].reshape(1, 4)
+                        ),
+                    )
+                    # print("This is what should be executed.")
+                elif self.feature_extractor == "Latent Policy":
+                    # TODO: Remove inference mode later. Default is inference mode.
+                    with torch.inference_mode():
+                        if share_features_extractor:
+                            # latent_pi, _ = neural_network(torch.stack(self.states_observed[-1:], dim=0))
+
+                            # latent_pi = neural_network.forward_sde_actor(
+                            #     torch.tensor(
+                            #         self.states_observed[
+                            #             -self.training_env.num_envs + state_index
+                            #         ],
+                            #         device="cpu",
+                            #     ).unsqueeze(0)
+                            # )
+
+                            latent_pi = neural_network.forward_sde_actor(
                                 self.states_observed[
                                     -self.training_env.num_envs + state_index
-                                ].reshape(1, self.n_components)
+                                ].unsqueeze(0)
                             )
+
+                    new_labels, _ = hdbscan.approximate_predict(
+                        self.clusterer,
+                        cp.asarray(latent_pi),
+                    )
+                elif self.feature_extractor == "UMAP":
+                    # new_labels, _ = hdbscan.approximate_predict(
+                    #     self.clusterer,
+                    #     cp.asarray(
+                    #         self.feature_normalizer.transform(
+                    #             self.states_observed[
+                    #                 -self.training_env.num_envs + state_index
+                    #             ].reshape(1, self.n_components)
+                    #         )
+                    #     ),
+                    # )
+                    new_labels, _ = hdbscan.approximate_predict(
+                        self.clusterer,
+                        cp.asarray(
+                            self.states_observed[
+                                -self.training_env.num_envs + state_index
+                            ].reshape(1, self.n_components)
                         ),
                     )
 
@@ -579,7 +643,7 @@ class StateDependentExploration(BaseCallback):
                     # self.cluster_associated_actions[self.clusterer.labels_[-1]][
                     #     self.actions_taken[-1]
                     # ] += 1
-                    self.cluster_associated_actions[self.clusterer.labels_[-1]][
+                    self.cluster_associated_actions[int(self.clusterer.labels_[-1])][
                         self.actions_taken[-self.training_env.num_envs + state_index]
                     ] += 1
 
@@ -601,7 +665,7 @@ class StateDependentExploration(BaseCallback):
 
             # TODO: TESTING NOT REWEIGHING THE ACTION PROBABILITIES BASED ON THE TOTAL ACTION COUNT AND INIDIVIDUAL
             #  ACTION COUNT.
-            if total_actions > 10000 and min(list(values)) > 1000:
+            if total_actions > 50000 and min(list(values)) > 10000:
                 action_probabilities = list(action_probabilities.values())
                 # temp = [val for val in action_probabilities]
                 # action_probabilities[0] = 1.0 - sum(action_probabilities[1:])
@@ -672,9 +736,12 @@ class StateDependentExploration(BaseCallback):
                     # print(f"Value: {value}")
                     if value == 0:
                         non_zero_values -= 1
+                        # print("Value equal to 0.", non_zero_values)
                     if value != 0:
+                        # print("Value not equal to 0.", non_zero_values)
                         break
                 non_zero_values = non_zero_values if non_zero_values != 0 else 1
+                # print("Final Non-zero values:", non_zero_values)
 
                 action_probability_difference = list(
                     np.asarray(action_probability_difference) / non_zero_values
@@ -696,7 +763,7 @@ class StateDependentExploration(BaseCallback):
 
             # print("Check 10")
             sde_action_probabilities = list(sde_action_probabilities.values())
-            temp = [val for val in sde_action_probabilities]
+            # temp = [val for val in sde_action_probabilities]
             action_probabilities_sum = sum(sde_action_probabilities)
             if action_probabilities_sum != 1:
                 for i in range(len(sde_action_probabilities)):
@@ -734,8 +801,6 @@ class CustomEvalCallback(EvalCallback):
 
         self.store_raw_results = store_raw_results
         if self.log_path:
-            # self.log_path = os.path.join(self.log_path[:-11], "raw_evaluation_results") if store_raw_results else (
-            #     os.path.join(self.log_path[:-11], "evaluation_statistics"))
             self.log_path = (
                 self.log_path.replace("evaluations", "raw_evaluation_results")
                 if store_raw_results
