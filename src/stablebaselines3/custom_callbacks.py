@@ -329,9 +329,13 @@ class StateDependentExploration(BaseCallback):
                     self.states_observed.append(observation)
 
             elif self.feature_extractor == "Latent Policy":
+
+                start_storing_observation = perf_counter()
                 observations = torch.tensor(self.model._last_obs, device="cpu")
                 for observation in observations:
                     self.states_observed.append(observation / 255)
+                if self.verbose >= 1:
+                    print("Time to store observations on a step:", {perf_counter() - start_storing_observation})
 
             elif self.feature_extractor in ["CNN", "CNN + UMAP"]:
                 # Testing Pre-trained CNN feature extractor.
@@ -458,10 +462,7 @@ class StateDependentExploration(BaseCallback):
                 elif self.feature_extractor == "Latent Policy":
                     # TODO: Remove inference mode later. Default is inference mode.
                     with torch.inference_mode():
-                        # neural_network.sde_actor_cnn = copy.deepcopy(neural_network.cnn)
-                        # neural_network.sde_actor_linear = copy.deepcopy(
-                        #     neural_network.linear
-                        # )
+                        load_neural_network_parameters_start = time.perf_counter()
                         neural_network.sde_actor_cnn.load_state_dict(
                             neural_network.cnn.state_dict()
                         )
@@ -474,7 +475,8 @@ class StateDependentExploration(BaseCallback):
                             neural_network.sde_actor_linear,
                         )
                         neural_network.sde_actor.to(device="cpu")
-
+                        if self.verbose >= 1:
+                            print("Time to load NN parameters:", time.perf_counter() - load_neural_network_parameters_start)
                         # neural_network.sde_actor.load_state_dict(
                         #     neural_network.policy_net.state_dict()
                         # )
@@ -483,13 +485,12 @@ class StateDependentExploration(BaseCallback):
                         if share_features_extractor:
                             # latent_pi, _ = neural_network(features)
                             # latent_pi, _ = neural_network(torch.stack(self.states_observed, dim=0))
-                            # latent_pi = neural_network.forward_sde_actor(
-                            #     torch.stack(self.states_observed, dim=0)
-                            # )
-
+                            forward_pass_start = time.perf_counter()
                             latent_pi = neural_network.forward_sde_actor(
                                 torch.stack(self.states_observed, dim=0)
                             )
+                            if self.verbose >= 1:
+                                print(f"Time to forward pass all observations: {time.perf_counter() - forward_pass_start}")
                             # latent_pi, _ = neural_network(self.states_observed)
                             # print(f"Latent Pi: {type(latent_vf), latent_vf.size()}")
                         # else:
@@ -517,7 +518,10 @@ class StateDependentExploration(BaseCallback):
                     # self.clusterer.fit(pw_distance)
 
                 else:
+                    cluster_all_observations_start = time.perf_counter()
                     self.clusterer.fit(self.states_observed)
+                    if self.verbose >= 1:
+                        print(f"Time to cluster all observations: {time.perf_counter() - cluster_all_observations_start}")
 
                 self.cluster_labels_checkpoint = self.clusterer.labels_
                 self.entire_data_clustered = True
@@ -559,17 +563,22 @@ class StateDependentExploration(BaseCallback):
                             #         device="cpu",
                             #     ).unsqueeze(0)
                             # )
-
+                            forward_pass_single_observation_start = time.perf_counter()
                             latent_pi = neural_network.forward_sde_actor(
                                 self.states_observed[
                                     -self.training_env.num_envs + state_index
                                 ].unsqueeze(0)
                             )
+                            if self.verbose >= 1:
+                                print(f"Time to forward pass a single observation: {time.perf_counter() - forward_pass_single_observation_start}")
 
+                    cluster_single_observation_start = time.perf_counter()
                     new_labels, _ = hdbscan.approximate_predict(
                         self.clusterer,
                         cp.asarray(latent_pi),
                     )
+                    if self.verbose >= 1:
+                        print(f"Time to cluster a single observation: {time.perf_counter() - cluster_single_observation_start}")
                 elif self.feature_extractor == "UMAP":
                     # new_labels, _ = hdbscan.approximate_predict(
                     #     self.clusterer,
@@ -581,9 +590,12 @@ class StateDependentExploration(BaseCallback):
                     #         )
                     #     ),
                     # )
+
+                    # Changing the input ot the clusterer to be a NumPy array as a cp array was causing issues with
+                    # illegal memory address access with CUDA.
                     new_labels, _ = hdbscan.approximate_predict(
                         self.clusterer,
-                        cp.asarray(
+                        np.asarray(
                             self.states_observed[
                                 -self.training_env.num_envs + state_index
                             ].reshape(1, self.n_components)

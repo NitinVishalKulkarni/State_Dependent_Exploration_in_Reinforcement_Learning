@@ -140,8 +140,12 @@ class CustomActorCriticPolicy(ActorCriticCnnPolicy):
         self.state_dependent_exploration_configuration = json.load(
             self.state_dependent_exploration_configuration
         )
-        if is_image_space(observation_space):
+        if is_image_space(observation_space) and self.state_dependent_exploration_configuration["feature_extractor"] == "Latent Policy":
+            print("Using CustomNatureCNN feature extractor.")
             features_extractor_class = CustomNatureCNN
+        elif is_image_space(observation_space) and not self.state_dependent_exploration_configuration["feature_extractor"] == "Latent Policy":
+            print("Using the NatureCNN feature extractor.")
+            features_extractor_class = NatureCNN
         else:
             features_extractor_class = FlattenExtractor
         # if self.verbose >= 2:
@@ -219,6 +223,7 @@ class CustomActorCriticPolicy(ActorCriticCnnPolicy):
         ] == "Latent Policy" and is_image_space(
             observation_space=self.observation_space
         ):
+            print("CustomNatureCNN and Blank MLPExtractor.")
             self.mlp_extractor = CustomMlpExtractor(
                 self.features_dim,
                 # net_arch=self.net_arch,  # Default MLP Feature Extractor
@@ -232,6 +237,7 @@ class CustomActorCriticPolicy(ActorCriticCnnPolicy):
         ] == "Latent Policy" and not is_image_space(
             observation_space=self.observation_space
         ):
+            print("Default MLPExtractor for non-image based observation space.")
             self.mlp_extractor = CustomMlpExtractor(
                 self.features_dim,
                 net_arch=self.net_arch,  # Default MLP Feature Extractor
@@ -242,7 +248,8 @@ class CustomActorCriticPolicy(ActorCriticCnnPolicy):
                 use_sde_actor=True,
             )
         else:
-            print("This is the default MLP Extractor for CartPole v1.")
+            print("This is the default MLP Extractor for environments with vector observation space or image based "
+                  "environments when latent policy is chosen as the feature extractor for SDE.")
             self.mlp_extractor = MlpExtractor(
                 self.features_dim,
                 net_arch=self.net_arch,

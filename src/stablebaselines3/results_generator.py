@@ -48,6 +48,7 @@ class ResultsGenerator:
         self.environment_kwargs = configuration["environment_keyword_arguments"]
         self.number_of_training_runs = configuration["number_of_training_runs"]
         self.agent = configuration["agent"]
+        self.n_steps = configuration["n_steps"]
         self.policy = configuration["policy"]
         self.verbose = configuration["verbose"]
         self.device = configuration["device"]
@@ -80,12 +81,14 @@ class ResultsGenerator:
                 n_envs=self.number_of_training_environments,
                 env_kwargs=self.environment_kwargs,
                 vec_env_cls=self.vector_environment_class,
+                # wrapper_kwargs={"screen_size": 128}
             )
             self.evaluation_environment = make_atari_env(
                 env_id=self.environment_id,
                 n_envs=self.number_of_evaluation_environments,
                 env_kwargs=self.environment_kwargs,
                 vec_env_cls=self.vector_environment_class,
+                # wrapper_kwargs={"screen_size": 128}
             )
         else:
             self.training_environment = make_vec_env(
@@ -116,6 +119,7 @@ class ResultsGenerator:
             "Evaluation Environment Observation Space:",
             self.evaluation_environment.observation_space,
         )
+        print("Training environment action space:", self.training_environment.action_space)
 
     @staticmethod
     def linear_schedule(initial_value: float) -> Callable[[float], float]:
@@ -283,6 +287,12 @@ class ResultsGenerator:
                 self.training_environment,
                 verbose=self.verbose,
                 device=self.device,
+                n_steps=self.n_steps,
+                batch_size=256,
+                n_epochs=4,
+                learning_rate=self.linear_schedule(2.5e-4),
+                ent_coef=0.01,
+                clip_range=self.linear_schedule(0.1)
             )
 
             self.train_agent(
