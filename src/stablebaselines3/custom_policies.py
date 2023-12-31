@@ -140,10 +140,18 @@ class CustomActorCriticPolicy(ActorCriticCnnPolicy):
         self.state_dependent_exploration_configuration = json.load(
             self.state_dependent_exploration_configuration
         )
-        if is_image_space(observation_space) and self.state_dependent_exploration_configuration["feature_extractor"] == "Latent Policy":
+        if (
+            is_image_space(observation_space)
+            and self.state_dependent_exploration_configuration["feature_extractor"]
+            == "Latent Policy"
+        ):
             print("Using CustomNatureCNN feature extractor.")
             features_extractor_class = CustomNatureCNN
-        elif is_image_space(observation_space) and not self.state_dependent_exploration_configuration["feature_extractor"] == "Latent Policy":
+        elif (
+            is_image_space(observation_space)
+            and not self.state_dependent_exploration_configuration["feature_extractor"]
+            == "Latent Policy"
+        ):
             print("Using the NatureCNN feature extractor.")
             features_extractor_class = NatureCNN
         else:
@@ -248,8 +256,10 @@ class CustomActorCriticPolicy(ActorCriticCnnPolicy):
                 use_sde_actor=True,
             )
         else:
-            print("This is the default MLP Extractor for environments with vector observation space or image based "
-                  "environments when latent policy is chosen as the feature extractor for SDE.")
+            print(
+                "This is the default MLP Extractor for environments with vector observation space or image based "
+                "environments when latent policy is chosen as the feature extractor for SDE."
+            )
             self.mlp_extractor = MlpExtractor(
                 self.features_dim,
                 net_arch=self.net_arch,
@@ -359,6 +369,7 @@ class CustomActorCriticPolicy(ActorCriticCnnPolicy):
             # actions = th.tensor(
             #     actions, device=self.state_dependent_exploration.model.device
             # )
+            # log_prob = distribution.log_prob(actions)
 
         else:
             actions = distribution.get_actions(deterministic=deterministic)

@@ -12,6 +12,8 @@ import pandas as pd
 from src.settings import results_directory
 from custom_callbacks import CustomEvalCallback
 from typing import Callable
+import shutil
+import os
 
 pd.set_option("display.max_rows", 1000)
 pd.set_option("display.max_columns", 100)
@@ -31,24 +33,23 @@ class ResultsGenerator:
         """
         self.configuration = configuration
         self.configuration_name = configuration["configuration_name"]
+
+        # Environment configuration:
         self.environment_id = configuration["environment_id"]
+        self.environment_kwargs = configuration["environment_keyword_arguments"]
         self.is_atari_environment = configuration["is_atari_environment"]
         self.make_vector_environment_bool = configuration[
             "make_vector_environment_bool"
         ]
         self.vector_environment_class = configuration["vector_environment_class"]
-        # self.wrapper_class = configuration["wrapper_class"]
-        # self.wrapper_kwargs = configuration["wrapper_kwargs"]
         self.number_of_frames_to_stack = configuration["number_of_frames_to_stack"]
 
-        # Train configuration:
+        # Training configuration:
         self.number_of_training_environments = configuration[
             "number_of_training_environments"
         ]
-        self.environment_kwargs = configuration["environment_keyword_arguments"]
         self.number_of_training_runs = configuration["number_of_training_runs"]
         self.agent = configuration["agent"]
-        self.n_steps = configuration["n_steps"]
         self.policy = configuration["policy"]
         self.verbose = configuration["verbose"]
         self.device = configuration["device"]
@@ -59,13 +60,13 @@ class ResultsGenerator:
 
         # Evaluation configuration:
         self.evaluate_agent_performance = configuration["evaluate_agent_performance"]
-        self.evaluation_frequency = configuration["evaluation_frequency"]
         self.number_of_evaluation_environments = configuration[
             "number_of_evaluation_environments"
         ]
         self.number_of_evaluation_episodes = configuration[
             "number_of_evaluation_episodes"
         ]
+        self.evaluation_frequency = configuration["evaluation_frequency"]
         self.deterministic_evaluation_policy = configuration[
             "deterministic_evaluation_policy"
         ]
@@ -74,6 +75,17 @@ class ResultsGenerator:
             "store_raw_evaluation_results"
         ]
 
+        # Algorithm configuration:
+        self.n_steps = configuration["n_steps"]
+        self.mini_batch_size = configuration["mini_batch_size"]
+        self.n_epochs = configuration["n_epochs"]
+        self.ent_coef = configuration["ent_coef"]
+        self.learning_rate = configuration["learning_rate"]
+        self.clip_range = configuration["clip_range"]
+        self.decay_learning_rate = configuration["decay_learning_rate"]
+        self.decay_clip_range = configuration["decay_clip_range"]
+        self.seed = configuration["seed"]
+
         # Instantiating the training and evaluation environments:
         if self.is_atari_environment:
             self.training_environment = make_atari_env(
@@ -81,14 +93,12 @@ class ResultsGenerator:
                 n_envs=self.number_of_training_environments,
                 env_kwargs=self.environment_kwargs,
                 vec_env_cls=self.vector_environment_class,
-                # wrapper_kwargs={"screen_size": 128}
             )
             self.evaluation_environment = make_atari_env(
                 env_id=self.environment_id,
                 n_envs=self.number_of_evaluation_environments,
                 env_kwargs=self.environment_kwargs,
                 vec_env_cls=self.vector_environment_class,
-                # wrapper_kwargs={"screen_size": 128}
             )
         else:
             self.training_environment = make_vec_env(
@@ -111,43 +121,56 @@ class ResultsGenerator:
             self.evaluation_environment = VecFrameStack(
                 self.evaluation_environment, n_stack=self.number_of_frames_to_stack
             )
-        print(
-            "Training Environment Observation Space:",
-            self.training_environment.observation_space,
-        )
-        print(
-            "Evaluation Environment Observation Space:",
-            self.evaluation_environment.observation_space,
-        )
-        print("Training environment action space:", self.training_environment.action_space)
+
+        if self.verbose >= 2:
+            print(
+                "Training Environment Observation Space:",
+                self.training_environment.observation_space,
+            )
+            print(
+                "Evaluation Environment Observation Space:",
+                self.evaluation_environment.observation_space,
+            )
+            print(
+                "Training environment action space:",
+                self.training_environment.action_space,
+            )
+            print(
+                "Evaluation Environment Action Space:",
+                self.evaluation_environment.action_space,
+            )
 
     @staticmethod
     def linear_schedule(initial_value: float) -> Callable[[float], float]:
         """
-        Linear learning rate schedule.
+        Linear schedule.
 
-        :param initial_value: Initial learning rate.
-        :return: schedule that computes
-          current learning rate depending on remaining progress
+        :param initial_value: Initial value of the parameter we want to decay.
+        :return: schedule that computes current value of the parameter we want to decay depending on remaining progress
         """
 
         def func(progress_remaining: float) -> float:
             """
-            Progress will decrease from 1 (beginning) to 0.
+            Progress will decrease from 1 (beginning) to 0 (end).
 
             :param progress_remaining:
-            :return: current learning rate
+            :return: current value of the parameter we want to decay.
             """
+
             return progress_remaining * initial_value
 
         return func
 
-    def train_agent(self, model, log_path=None, best_model_path=None):
+    def train_agent(self, model, log_path: str = None, best_model_path: str = None):
         """
-        This method trains our agent on the environment.
+        This method trains our agent on the environment
+
+        :param model - The RL Algorithm model.
+        :param log_path - The path where we want to store the results.
+        :param best_model_path - The path where we want to store the best model.
         """
 
-        if self.verbose == 1:
+        if self.verbose >= 1:
             print("\n\n\033[1mTraining Agent:\033[1m")
 
         # Determining which callback to use:
@@ -185,7 +208,7 @@ class ResultsGenerator:
                 f"\n\n\033[1mTraining Time: {time.perf_counter() - training_start_time} seconds\033[0m"
             )
 
-    def generate_consolidated_evaluation_statistics(self, log_path):
+    def generate_consolidated_evaluation_statistics(self, log_path: str):
         """
         This method generates the consolidated evaluation statistics.
 
@@ -193,7 +216,7 @@ class ResultsGenerator:
         """
 
         per_training_run_evaluation_statistics = [
-            np.load(f"{log_path}/training_run_{i + 1}/evaluation_statistics.npz")
+            np.load(f"{log_path}training_run_{i + 1}/evaluation_statistics.npz")
             for i in range(self.number_of_training_runs)
         ]
 
@@ -205,11 +228,11 @@ class ResultsGenerator:
             )
 
             statistical_measures = {
-                "Min": np.nanmin,
-                "Max": np.nanmax,
-                "Mean": np.nanmean,
-                "Std": np.nanstd,
-                "Median": np.nanmedian,
+                "Min": np.min,
+                "Max": np.max,
+                "Mean": np.mean,
+                "Std": np.std,
+                "Median": np.median,
             }
 
             evaluation_metrics = {
@@ -264,7 +287,7 @@ class ResultsGenerator:
                         ] = statistical_measures[statistical_measure](values[f"{freq}"])
 
             consolidated_evaluation_statistics.to_csv(
-                f"{log_path}/consolidated_{metric.lower().replace(' ', '_')}_statistics.csv",
+                f"{log_path}consolidated_{metric.lower().replace(' ', '_')}_statistics.csv",
                 index=False,
             )
             if self.verbose >= 1:
@@ -281,6 +304,17 @@ class ResultsGenerator:
         current_time = time.localtime()
         current_time = time.strftime("%m-%d-%Y %H-%M-%S", current_time)
 
+        # Saving the configurations:
+        log_path = f"{results_directory}/{self.environment_id}/{self.configuration_name}/{current_time}/"
+        os.makedirs(
+            os.path.dirname(log_path),
+            exist_ok=True,
+        )
+        shutil.copy(src="./results_generator_configuration.json", dst=log_path)
+        shutil.copy(
+            src="./state_dependent_exploration_configuration.json", dst=log_path
+        )
+
         for i in tqdm.tqdm(range(self.number_of_training_runs)):
             model = self.agent(
                 self.policy,
@@ -288,22 +322,23 @@ class ResultsGenerator:
                 verbose=self.verbose,
                 device=self.device,
                 n_steps=self.n_steps,
-                batch_size=256,
-                n_epochs=4,
-                learning_rate=self.linear_schedule(2.5e-4),
-                ent_coef=0.01,
-                clip_range=self.linear_schedule(0.1)
+                batch_size=self.mini_batch_size,
+                n_epochs=self.n_epochs,
+                ent_coef=self.ent_coef,
+                learning_rate=self.linear_schedule(self.learning_rate)
+                if self.decay_learning_rate
+                else self.learning_rate,
+                clip_range=self.linear_schedule(self.clip_range)
+                if self.decay_clip_range
+                else self.clip_range,
+                seed=self.seed,
             )
 
             self.train_agent(
                 model=model,
-                log_path=f"{results_directory}/{self.environment_id}/{self.configuration_name}"
-                f"/{current_time}/training_run_{i + 1}/",
-                best_model_path=f"{results_directory}/{self.environment_id}/{self.configuration_name}"
-                f"/{current_time}/best_model/",
+                log_path=f"{log_path}training_run_{i + 1}/",
+                best_model_path=f"{log_path}training_run_{i + 1}/best_model/",
             )
 
         if self.evaluate_agent_performance:
-            self.generate_consolidated_evaluation_statistics(
-                log_path=f"{results_directory}/{self.environment_id}/{self.configuration_name}/{current_time}"
-            )
+            self.generate_consolidated_evaluation_statistics(log_path=f"{log_path}")

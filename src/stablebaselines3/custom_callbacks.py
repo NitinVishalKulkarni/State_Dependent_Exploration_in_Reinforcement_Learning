@@ -20,9 +20,12 @@ from cuml import UMAP
 from time import perf_counter
 from torchvision.models import AlexNet_Weights, AlexNet
 import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
 from sklearn.metrics import pairwise_distances
 from sklearn.preprocessing import Normalizer
 import copy
+from src.settings import results_directory
+import shutil
 
 
 class CNNFeatureExtractor(AlexNet):
@@ -60,6 +63,7 @@ class StateDependentExploration(BaseCallback):
         )
 
         self.states_observed = []
+        self.last_step_observations = []
         self.actions_taken = []
         self.action_space = state_dependent_exploration_configuration["action_space"]
         self.initial_reweighing_strength = state_dependent_exploration_configuration[
@@ -86,7 +90,7 @@ class StateDependentExploration(BaseCallback):
             cluster_selection_method=state_dependent_exploration_configuration[
                 "cluster_selection_method"
             ],
-            # leaf_size=state_dependent_exploration_configuration["leaf_size"],
+            leaf_size=state_dependent_exploration_configuration["leaf_size"],
             # connectivity="knn",
             metric=state_dependent_exploration_configuration["metric"],
             prediction_data=state_dependent_exploration_configuration[
@@ -127,10 +131,19 @@ class StateDependentExploration(BaseCallback):
         self.cluster_associated_actions = {}
         self.entire_data_clustered = True
 
+        self.batch_number = 0
+
     def _on_training_start(self) -> None:
         """
         This method is called before the first rollout starts.
         """
+
+        # Deleting previously stored observations.
+        if os.path.isdir(f"{results_directory}/temporary_observations"):
+            shutil.rmtree(f"{results_directory}/temporary_observations")
+
+        if not os.path.exists(f"{results_directory}/temporary_observations"):
+            os.makedirs(f"{results_directory}/temporary_observations")
 
         feature_extractor_train_start_time = time.perf_counter()
         if self.feature_extractor is None:
@@ -329,13 +342,43 @@ class StateDependentExploration(BaseCallback):
                     self.states_observed.append(observation)
 
             elif self.feature_extractor == "Latent Policy":
-
-                start_storing_observation = perf_counter()
                 observations = torch.tensor(self.model._last_obs, device="cpu")
                 for observation in observations:
                     self.states_observed.append(observation / 255)
-                if self.verbose >= 1:
-                    print("Time to store observations on a step:", {perf_counter() - start_storing_observation})
+                self.last_step_observations = self.states_observed[
+                    -self.training_env.num_envs :
+                ]
+
+                if len(self.states_observed) == 10240:
+                    start_storing_observation = perf_counter()
+                    temp_dataset = TensorDataset(
+                        torch.stack(self.states_observed, dim=0)
+                    )
+                    torch.save(
+                        temp_dataset,
+                        f"{results_directory}/temporary_observations/batch_{self.batch_number}.pt",
+                    )
+                    self.batch_number += 1
+                    self.states_observed = []
+                    if self.verbose >= 3:
+                        print(
+                            "Time to store observations on a step:",
+                            {perf_counter() - start_storing_observation},
+                        )
+                # temp_2 = torch.load(f"{results_directory}/temp.pt")
+                # print("TEMP 2:", temp_2)
+                # dataloader = DataLoader(dataset=temp_2, batch_size=2, shuffle=False)
+                # print("DataLoader", dataloader)
+                # for i, sampled_batch in enumerate(dataloader):
+                #     sampled_batch[0].to(device="cuda")
+                #     print(
+                #         "I:",
+                #         i,
+                #         sampled_batch[0].size(),
+                #         sampled_batch[0].to("cuda").device,
+                #         sampled_batch[0].requires_grad,
+                #     )
+                # sys.exit()
 
             elif self.feature_extractor in ["CNN", "CNN + UMAP"]:
                 # Testing Pre-trained CNN feature extractor.
@@ -407,7 +450,7 @@ class StateDependentExploration(BaseCallback):
 
         pass
 
-    def reweigh_action_probabilities(
+    def reweigh_action_probabilities_0(
         self, action_probabilities_, share_features_extractor=None, neural_network=None
     ):
         """
@@ -476,7 +519,11 @@ class StateDependentExploration(BaseCallback):
                         )
                         neural_network.sde_actor.to(device="cpu")
                         if self.verbose >= 1:
-                            print("Time to load NN parameters:", time.perf_counter() - load_neural_network_parameters_start)
+                            print(
+                                "Time to load NN parameters:",
+                                time.perf_counter()
+                                - load_neural_network_parameters_start,
+                            )
                         # neural_network.sde_actor.load_state_dict(
                         #     neural_network.policy_net.state_dict()
                         # )
@@ -490,7 +537,9 @@ class StateDependentExploration(BaseCallback):
                                 torch.stack(self.states_observed, dim=0)
                             )
                             if self.verbose >= 1:
-                                print(f"Time to forward pass all observations: {time.perf_counter() - forward_pass_start}")
+                                print(
+                                    f"\n\n\n\nTime to forward pass all observations: {time.perf_counter() - forward_pass_start}"
+                                )
                             # latent_pi, _ = neural_network(self.states_observed)
                             # print(f"Latent Pi: {type(latent_vf), latent_vf.size()}")
                         # else:
@@ -521,7 +570,9 @@ class StateDependentExploration(BaseCallback):
                     cluster_all_observations_start = time.perf_counter()
                     self.clusterer.fit(self.states_observed)
                     if self.verbose >= 1:
-                        print(f"Time to cluster all observations: {time.perf_counter() - cluster_all_observations_start}")
+                        print(
+                            f"Time to cluster all observations: {time.perf_counter() - cluster_all_observations_start}"
+                        )
 
                 self.cluster_labels_checkpoint = self.clusterer.labels_
                 self.entire_data_clustered = True
@@ -570,7 +621,9 @@ class StateDependentExploration(BaseCallback):
                                 ].unsqueeze(0)
                             )
                             if self.verbose >= 1:
-                                print(f"Time to forward pass a single observation: {time.perf_counter() - forward_pass_single_observation_start}")
+                                print(
+                                    f"Time to forward pass a single observation: {time.perf_counter() - forward_pass_single_observation_start}"
+                                )
 
                     cluster_single_observation_start = time.perf_counter()
                     new_labels, _ = hdbscan.approximate_predict(
@@ -578,7 +631,9 @@ class StateDependentExploration(BaseCallback):
                         cp.asarray(latent_pi),
                     )
                     if self.verbose >= 1:
-                        print(f"Time to cluster a single observation: {time.perf_counter() - cluster_single_observation_start}")
+                        print(
+                            f"Time to cluster a single observation: {time.perf_counter() - cluster_single_observation_start}"
+                        )
                 elif self.feature_extractor == "UMAP":
                     # new_labels, _ = hdbscan.approximate_predict(
                     #     self.clusterer,
@@ -672,6 +727,470 @@ class StateDependentExploration(BaseCallback):
             # values = self.cluster_associated_actions[
             #     int(self.clusterer.labels_[-self.training_env.num_envs + state_index])
             # ].values()
+            # print(f"Keys: {keys}, Values: {values}")
+            total_actions = sum(list(values))
+
+            # TODO: TESTING NOT REWEIGHING THE ACTION PROBABILITIES BASED ON THE TOTAL ACTION COUNT AND INIDIVIDUAL
+            #  ACTION COUNT.
+            if total_actions > 50000 and min(list(values)) > 10000:
+                action_probabilities = list(action_probabilities.values())
+                # temp = [val for val in action_probabilities]
+                # action_probabilities[0] = 1.0 - sum(action_probabilities[1:])
+                action_probabilities_sum = sum(action_probabilities)
+                if action_probabilities_sum != 1:
+                    for i in range(len(action_probabilities)):
+                        action_probabilities[i] = (
+                            1.0 - action_probabilities_sum + action_probabilities[i]
+                        )
+                        if 0 <= action_probabilities[i] <= 1:
+                            break
+                        else:
+                            # print("Action Probability less than or greater than 0 after adjusting.",
+                            #       i, action_probabilities[i], action_probabilities, action_probabilities_sum,
+                            #       sum(action_probabilities))
+                            action_probabilities[i] = int(action_probabilities[i])
+                            action_probabilities_sum = sum(action_probabilities)
+                            # print("TEST:", i + 1, 1.0 - action_probabilities_sum + action_probabilities[i + 1])
+
+                # if any(i < 0 for i in action_probabilities):
+                #     print("Negative Action Probabilities:", action_probabilities, self.cluster_associated_actions[
+                #         self.clusterer.labels_[-1]], keys, values, total_actions)
+                #     print(f"Before Subtraction: {temp, sum(temp)}")
+                # sys.exit()
+                action_probabilities_to_return.append(action_probabilities)
+                continue
+                # return action_probabilities
+
+            cluster_associated_actions_ratios = {
+                key: value / total_actions for key, value in zip(keys, values)
+            }
+            sde_action_probabilities = {
+                i: action_probabilities[i] for i in range(len(action_probabilities))
+            }
+            # print(f"CAA Ratios: {cluster_associated_actions_ratios}")
+            # print(f"SDE AP: {sde_action_probabilities}")
+
+            sorted_cluster_associated_actions_ratios = sorted(
+                cluster_associated_actions_ratios.items(),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            action_probability_differences = []
+            # print(f"Sorted CAA Ratios: {sorted_cluster_associated_actions_ratios}")
+            # print("Check 8")
+            for i in range(len(sorted_cluster_associated_actions_ratios)):
+                # print("Check 9")
+                action, caa_ratio = sorted_cluster_associated_actions_ratios[i]
+                # print(f"I: {i}, Action: {action}, CAA Ratio: {caa_ratio}")
+                action_probability = action_probabilities[action]
+                # print(f"AP: {action_probability}")
+                action_probability_difference = []
+                for j in range(i + 1, len(sorted_cluster_associated_actions_ratios)):
+                    (
+                        next_action,
+                        next_caa_ratio,
+                    ) = sorted_cluster_associated_actions_ratios[j]
+                    # print(f"J: {j}, Next Action: {next_action}, Next CAA Ratio: {next_caa_ratio}")
+                    action_probability_difference.append(
+                        self.initial_reweighing_strength
+                        * (caa_ratio - next_caa_ratio)
+                        * action_probability
+                    )
+
+                # print(f"Action Probability Difference: {action_probability_difference}")
+                non_zero_values = len(action_probability_difference)
+                for value in action_probability_difference:
+                    # print(f"Value: {value}")
+                    if value == 0:
+                        non_zero_values -= 1
+                        # print("Value equal to 0.", non_zero_values)
+                    if value != 0:
+                        # print("Value not equal to 0.", non_zero_values)
+                        break
+                non_zero_values = non_zero_values if non_zero_values != 0 else 1
+                # print("Final Non-zero values:", non_zero_values)
+
+                action_probability_difference = list(
+                    np.asarray(action_probability_difference) / non_zero_values
+                )
+                action_probability_differences.append(action_probability_difference)
+                sde_action_probabilities[action] -= np.sum(
+                    action_probability_differences[-1]
+                )
+                index = 0
+                for j in range(i + 1, len(sorted_cluster_associated_actions_ratios)):
+                    (
+                        next_action,
+                        next_caa_ratio,
+                    ) = sorted_cluster_associated_actions_ratios[j]
+                    sde_action_probabilities[
+                        next_action
+                    ] += action_probability_difference[index]
+                    index += 1
+
+            # print("Check 10")
+            sde_action_probabilities = list(sde_action_probabilities.values())
+            # temp = [val for val in sde_action_probabilities]
+            action_probabilities_sum = sum(sde_action_probabilities)
+            if action_probabilities_sum != 1:
+                for i in range(len(sde_action_probabilities)):
+                    sde_action_probabilities[i] = (
+                        1.0 - action_probabilities_sum + sde_action_probabilities[i]
+                    )
+                    if 0 <= sde_action_probabilities[i] <= 1:
+                        break
+                    else:
+                        # print("SDE Action Probability less than or greater than 0 after adjusting.",
+                        #       i, sde_action_probabilities[i], sde_action_probabilities, action_probabilities_sum,
+                        #       sum(sde_action_probabilities))
+                        sde_action_probabilities[i] = int(sde_action_probabilities[i])
+                        action_probabilities_sum = sum(sde_action_probabilities)
+                        # print("SDE TEST:", i + 1, 1.0 - action_probabilities_sum + sde_action_probabilities[i + 1])
+
+            # if any(i < 0 for i in sde_action_probabilities):
+            #     print("Negative SDE Action Probabilities:", sde_action_probabilities, self.cluster_associated_actions[
+            #         self.clusterer.labels_[-1]], keys, values, total_actions)
+            #     print(f"Before SDE Subtraction: {temp, sum(temp)}")
+            # sys.exit()
+            action_probabilities_to_return.append(sde_action_probabilities)
+            # return sde_action_probabilities
+        return action_probabilities_to_return
+
+    def reweigh_action_probabilities(
+        self, action_probabilities_, share_features_extractor=None, neural_network=None
+    ):
+        """
+        This method...
+        """
+
+        # print(f"Length States Observed: "
+        #       f"{len(self.states_observed), self.num_timesteps, self.locals['total_timesteps']}")
+        # print(f"States Observed: {self.states_observed}")
+        # print(f"Actions Taken: {len(self.actions_taken), self.actions_taken}")
+        if (
+            self.num_timesteps < 100
+            or self.num_timesteps
+            > self.locals["total_timesteps"] * self.reweighing_duration
+        ):
+            print("Did this get executed?")
+            return action_probabilities_.cpu().detach().numpy()
+        # print("Action Probabilities:", action_probabilities_)
+
+        action_probabilities_ = torch.tensor_split(
+            action_probabilities_, action_probabilities_.size()[0]
+        )
+        action_probabilities_ = [
+            action_probabilities.squeeze()
+            for action_probabilities in action_probabilities_
+        ]
+
+        # print(f"Action Probabilities:", action_probabilities_)
+        # sys.exit()
+        action_probabilities_to_return = []
+        # for state_index, action_probabilities in enumerate(action_probabilities_):
+        # Exponential Decay:
+        self.initial_reweighing_strength = (
+            1
+            * (
+                (0.01 / 1)
+                ** (1 / (self.locals["total_timesteps"] * self.reweighing_duration))
+            )
+            ** self.num_timesteps
+        )
+        # self.initial_reweighing_strength = 1
+
+        action_probabilities_ = [
+            action_probabilities.cpu().detach().numpy()
+            for action_probabilities in action_probabilities_
+        ]
+        action_probabilities_ = [
+            {i: action_probabilities[i] for i in range(len(action_probabilities))}
+            for action_probabilities in action_probabilities_
+        ]
+        # print("Check 1", action_probabilities)
+
+        if (
+            self.num_timesteps < 100
+            or self.num_timesteps
+            > (self.cluster_persistence + 1) * self.previous_number_of_states_clustered
+        ):
+            # print("Check 2")
+            self.previous_number_of_states_clustered = self.num_timesteps
+            if self.feature_extractor is None:
+                self.clusterer.fit(cp.asarray(self.states_observed))
+            elif self.feature_extractor == "Latent Policy":
+                # TODO: Remove inference mode later. Default is inference mode.
+                with torch.inference_mode():
+                    load_neural_network_parameters_start = time.perf_counter()
+                    neural_network.sde_actor_cnn.load_state_dict(
+                        neural_network.cnn.state_dict()
+                    )
+                    neural_network.sde_actor_linear.load_state_dict(
+                        neural_network.linear.state_dict()
+                    )
+
+                    neural_network.sde_actor = nn.Sequential(
+                        neural_network.sde_actor_cnn,
+                        neural_network.sde_actor_linear,
+                    )
+                    neural_network.sde_actor.to(device="cuda")
+                    if self.verbose >= 1:
+                        print(
+                            "Time to load NN parameters:",
+                            time.perf_counter() - load_neural_network_parameters_start,
+                        )
+                    # neural_network.sde_actor.load_state_dict(
+                    #     neural_network.policy_net.state_dict()
+                    # )
+                    # features = feature_extractor(torch.tensor(self.states_observed, device=device))
+                    # print(f"Features: {type(features), features.size(), features.requires_grad, device}")
+                    if share_features_extractor:
+                        # latent_pi, _ = neural_network(features)
+                        # latent_pi, _ = neural_network(torch.stack(self.states_observed, dim=0))
+                        forward_pass_start = time.perf_counter()
+                        if self.num_timesteps >= 10240:
+                            latent_pi = None
+                            for i in range(self.batch_number):
+                                batch_observations = torch.load(
+                                    f"{results_directory}/temporary_observations/batch_{i}.pt"
+                                )
+                                dataloader = DataLoader(
+                                    dataset=batch_observations,
+                                    batch_size=10240,
+                                    shuffle=False,
+                                )
+                                for j, sampled_batch in enumerate(dataloader):
+                                    latent_pi_batch = neural_network.forward_sde_actor(
+                                        sampled_batch[0].to(device="cuda")
+                                    )
+                                    if latent_pi is not None:
+                                        latent_pi = torch.cat(
+                                            (latent_pi, latent_pi_batch), dim=0
+                                        )
+                                    else:
+                                        latent_pi = latent_pi_batch
+                                    # print(
+                                    #     "Size Test:",
+                                    #     j,
+                                    #     latent_pi.size(),
+                                    #     latent_pi_batch.size(),
+                                    # )
+                                if len(self.states_observed) > 0:
+                                    latent_pi_batch = neural_network.forward_sde_actor(
+                                        torch.stack(self.states_observed, dim=0).to(
+                                            device="cuda"
+                                        )
+                                    )
+                                    latent_pi = torch.cat(
+                                        (latent_pi, latent_pi_batch), dim=0
+                                    )
+                            if self.verbose >= 3:
+                                print(
+                                    f"Time to forward pass all observations: {time.perf_counter() - forward_pass_start}"
+                                )
+                        else:
+                            latent_pi = neural_network.forward_sde_actor(
+                                torch.stack(self.states_observed, dim=0).to(
+                                    device="cuda"
+                                )
+                            )
+                        # latent_pi, _ = neural_network(self.states_observed)
+                        # print(f"Latent Pi: {type(latent_vf), latent_vf.size()}")
+                    # else:
+                    #     # pi_features, _ = torch.tensor(features)
+                    #     pi_features, _ = torch.stack(self.states_observed, dim=0)
+                    #     latent_pi = neural_network.forward_actor(pi_features)
+                # print(f"Features: {type(features), features.size()}")
+                # print(
+                #     f"Latent Pi: {type(latent_pi), latent_pi.size(), latent_pi.requires_grad}"
+                # )
+                latent_pi = latent_pi.cpu().detach()
+                self.clusterer.fit(cp.asarray(latent_pi))
+                # sys.exit()
+                # latent_pi = latent_pi.cpu().detach()
+            elif self.feature_extractor == "UMAP":
+                self.clusterer.fit(cp.asarray(self.states_observed))
+                # norm_data = self.feature_normalizer.fit_transform(
+                #     self.states_observed
+                # )
+                # self.clusterer.fit(cp.asarray(norm_data))
+                # pw_distance = pairwise_distances(
+                #     np.asarray(self.states_observed), metric="cosine"
+                # )
+                # print(pw_distance.shape)
+                # self.clusterer.fit(pw_distance)
+
+            else:
+                cluster_all_observations_start = time.perf_counter()
+                self.clusterer.fit(self.states_observed)
+                if self.verbose >= 3:
+                    print(
+                        f"Time to cluster all observations: {time.perf_counter() - cluster_all_observations_start}"
+                    )
+
+            self.cluster_labels_checkpoint = self.clusterer.labels_
+            self.entire_data_clustered = True
+
+            if self.verbose >= 2:
+                print(f"\n\nTotal States Observed: {len(self.states_observed)}")
+                print(
+                    f"Cluster Counts: {sorted(Counter(self.clusterer.labels_.tolist()).values(), reverse=True)[:25]}"
+                )
+                # print(
+                #     f"Ordered Cluster Counts: {sorted(Counter(self.clusterer.labels_.tolist()).items())}"
+                # )
+                print(
+                    f"Total Number of Clusters: {len(np.unique(self.clusterer.labels_))}"
+                )
+        else:
+            # print("Check 3")
+            if self.feature_extractor is None:
+                new_labels, _ = hdbscan.approximate_predict(
+                    self.clusterer,
+                    cp.asarray(
+                        self.states_observed[-self.training_env.num_envs :]
+                    ).reshape(self.training_env.num_envs, 4),
+                )
+                # print("This is what should be executed.")
+            elif self.feature_extractor == "Latent Policy":
+                # TODO: Remove inference mode later. Default is inference mode.
+                with torch.inference_mode():
+                    if share_features_extractor:
+                        # latent_pi, _ = neural_network(torch.stack(self.states_observed[-1:], dim=0))
+
+                        # latent_pi = neural_network.forward_sde_actor(
+                        #     torch.tensor(
+                        #         self.states_observed[
+                        #             -self.training_env.num_envs + state_index
+                        #         ],
+                        #         device="cpu",
+                        #     ).unsqueeze(0)
+                        # )
+                        forward_pass_single_observation_start = time.perf_counter()
+                        # MODIFIED TO SUPPORT TENSORDATASET:
+                        # latent_pi = neural_network.forward_sde_actor(
+                        #     torch.stack(
+                        #         self.states_observed[-self.training_env.num_envs :],
+                        #         dim=0,
+                        #     ).to(device="cuda")
+                        # )
+                        latent_pi = neural_network.forward_sde_actor(
+                            torch.stack(
+                                self.last_step_observations,
+                                dim=0,
+                            ).to(device="cuda")
+                        )
+                        if self.verbose >= 3:
+                            print(
+                                f"Time to forward pass a single observation: {time.perf_counter() - forward_pass_single_observation_start}"
+                            )
+
+                cluster_single_observation_start = time.perf_counter()
+                new_labels, _ = hdbscan.approximate_predict(
+                    self.clusterer,
+                    cp.asarray(latent_pi),
+                )
+                if self.verbose >= 3:
+                    print(
+                        f"Time to cluster a single observation: {time.perf_counter() - cluster_single_observation_start}"
+                    )
+            elif self.feature_extractor == "UMAP":
+                # new_labels, _ = hdbscan.approximate_predict(
+                #     self.clusterer,
+                #     cp.asarray(
+                #         self.feature_normalizer.transform(
+                #             self.states_observed[
+                #                 -self.training_env.num_envs + state_index
+                #             ].reshape(1, self.n_components)
+                #         )
+                #     ),
+                # )
+
+                # Changing the input ot the clusterer to be a NumPy array as a cp array was causing issues with
+                # illegal memory address access with CUDA.
+                new_labels, _ = hdbscan.approximate_predict(
+                    self.clusterer,
+                    np.asarray(
+                        self.states_observed[-self.training_env.num_envs :]
+                    ).reshape(self.training_env.num_envs, self.n_components),
+                )
+
+            else:
+                new_labels, _ = hdbscan.approximate_predict(
+                    self.clusterer, self.states_observed[-1:]
+                )
+
+            # self.clusterer.labels_ = np.concatenate(
+            #     (self.clusterer.labels_, new_labels)
+            # )
+            self.clusterer.labels_ = np.concatenate(
+                (self.clusterer.labels_, cp.asarray(new_labels))
+            )
+
+            self.entire_data_clustered = False
+
+        if self.entire_data_clustered:
+            # print(f"Action Space: {self.action_space.n}")
+            # print("Check 4")
+            self.cluster_associated_actions = {
+                int(key): {action: 0 for action in range(self.action_space.n)}
+                for key in np.unique(self.clusterer.labels_)
+            }
+
+            for i, action_taken in enumerate(self.actions_taken):
+                try:
+                    self.cluster_associated_actions[int(self.clusterer.labels_[i])][
+                        action_taken
+                    ] += 1
+                except IndexError:
+                    print(i, len(self.clusterer.labels_))
+
+        else:
+            # cluster_associate_actions_update_start_time = time.perf_counter()
+            # print("Check 5")
+
+            # print("Check 6")
+            # self.cluster_associated_actions[int(self.clusterer.labels_[-1])][
+            #     self.actions_taken[-1]
+            # ] += 1
+            for i in range(1, self.training_env.num_envs + 1):
+                try:
+                    self.cluster_associated_actions[int(self.clusterer.labels_[-i])][
+                        self.actions_taken[-i]
+                    ] += 1
+                except KeyError:
+                    # print("Check 7")
+                    print(
+                        f"This error occurs when there's no outlier in the original clustering but the approximate "
+                        f"predict results in an outlier."
+                    )
+                    # print(self.actions_taken[-1])
+                    # print(self.clusterer.labels_)
+                    # print(self.cluster_associated_actions)
+                    self.cluster_associated_actions[-1] = {
+                        action: 0 for action in range(self.action_space.n)
+                    }
+                    # self.cluster_associated_actions[self.clusterer.labels_[-1]][
+                    #     self.actions_taken[-1]
+                    # ] += 1
+                    self.cluster_associated_actions[int(self.clusterer.labels_[-1])][
+                        self.actions_taken[-i]
+                    ] += 1
+
+        # print(f"Cluster AA: {self.cluster_associated_actions}")
+        # keys = self.cluster_associated_actions[
+        #     int(self.clusterer.labels_[-1])
+        # ].keys()
+        # values = self.cluster_associated_actions[
+        #     int(self.clusterer.labels_[-1])
+        # ].values()
+        for state_index, action_probabilities in enumerate(action_probabilities_):
+            keys = self.cluster_associated_actions[
+                int(self.clusterer.labels_[-self.training_env.num_envs + state_index])
+            ].keys()
+            values = self.cluster_associated_actions[
+                int(self.clusterer.labels_[-self.training_env.num_envs + state_index])
+            ].values()
             # print(f"Keys: {keys}, Values: {values}")
             total_actions = sum(list(values))
 
